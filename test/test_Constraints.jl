@@ -14,9 +14,10 @@
 
     C = DS.Constraints{T}()
     @testset "Constraints" begin
-        @test C.count == length(C.collections) == 2
+        @test C.count == length(C.collections) == 3
         @test typeof(C.collections[1]) == DS.ConstraintCollection{T, DS.ExtremeConstraint}
         @test typeof(C.collections[2]) == DS.ConstraintCollection{T, DS.ProgressiveConstraint}
+        @test typeof(C.collections[3]) == DS.ConstraintCollection{T, DS.SimulationProgressiveConstraint}
     end
 
     @testset "DefaultConstraintCollection" begin
@@ -44,7 +45,7 @@
 
         # Can't push an extreme constraint to a progressive collection
         @test_throws MethodError DS.AddExtremeConstraint(C, c1, index=DS.CollectionIndex(2))
-        @test_throws ErrorException DS.AddExtremeConstraint(C, c1, index=DS.CollectionIndex(3))
+        @test_throws ErrorException DS.AddExtremeConstraint(C, c1, index=DS.CollectionIndex(4))
 
         vec_ref = DS.AddExtremeConstraint(C, [c2, c3])
         @test length(vec_ref) == 2
@@ -59,7 +60,7 @@
 
         # Can't push an extreme constraint to a progressive collection
         @test_throws MethodError DS.AddProgressiveConstraint(C, p1, index=DS.CollectionIndex(1))
-        @test_throws ErrorException DS.AddProgressiveConstraint(C, p1, index=DS.CollectionIndex(3))
+        @test_throws ErrorException DS.AddProgressiveConstraint(C, p1, index=DS.CollectionIndex(4))
 
         vec_ref = DS.AddProgressiveConstraint(C, [c2, c3])
         @test length(vec_ref) == 2
@@ -67,17 +68,32 @@
         @test vec_ref[2].value == 3
     end
 
+    @testset "AddSimulationProgressiveConstraint" begin
+        p1_ref = DS.AddSimulationProgressiveConstraint(C, p1)
+        @test p1_ref.value == 1
+        @test typeof(p1_ref) == DS.ConstraintIndex
+
+        # Can't push an extreme constraint to a progressive collection
+        @test_throws MethodError DS.AddSimulationProgressiveConstraint(C, p1, index=DS.CollectionIndex(1))
+        @test_throws ErrorException DS.AddSimulationProgressiveConstraint(C, p1, index=DS.CollectionIndex(4))
+
+        #vec_ref = DS.AddSimulationProgressiveConstraint(C, [c2, c3])
+        #@test length(vec_ref) == 2
+        #@test vec_ref[1].value == 2
+        #@test vec_ref[2].value == 3
+    end
+
     C = DS.Constraints{T}()
     @testset "AddProgressiveCollection" begin
         c_ref = DS.AddProgressiveCollection(C)
         @test typeof(c_ref) == DS.CollectionIndex
-        @test c_ref.value == 3
+        @test c_ref.value == 4
 
-        @test typeof(C.collections[3]) == DS.ConstraintCollection{T, DS.ProgressiveConstraint}
-        @test length(C.collections[3].constraints) == C.collections[3].count == 0
+        @test typeof(C.collections[4]) == DS.ConstraintCollection{T, DS.ProgressiveConstraint}
+        @test length(C.collections[4].constraints) == C.collections[4].count == 0
 
         p_ref = DS.AddProgressiveConstraint(C, p2, index=c_ref)
-        @test length(C.collections[3].constraints) == C.collections[3].count == 1
+        @test length(C.collections[4].constraints) == C.collections[4].count == 1
     end
 
     #TODO constraint evaluation

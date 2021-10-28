@@ -1,5 +1,7 @@
-export DefaultExtremeRef, DefaultProgressiveRef, AddExtremeConstraint, AddExtremeCollection,
-       AddProgressiveCollection, AddProgressiveConstraint
+export DefaultAllConstraintsRef, DefaultExtremeRef, DefaultProgressiveRef, DefaultSimulationProgressiveRef
+export AddExtremeConstraint, AddExtremeCollection
+export AddProgressiveCollection, AddProgressiveConstraint
+export AddSimulationProgressiveCollection, AddSimulationProgressiveConstraint
 
 """
     @enum IterationOutcome
@@ -54,6 +56,13 @@ struct ConstraintIndex
 end
 
 """
+    DefaultAllConstraintsRef
+
+The collection index that refers to all constraint collections.
+"""
+const DefaultAllConstraintsRef = CollectionIndex(0)
+
+"""
     DefaultExtremeRef
 
 The collection index that refers to the default location of extreme barrier
@@ -68,6 +77,14 @@ The collection index that refers to the default location of progressive barrier
 constraints.
 """
 const DefaultProgressiveRef = CollectionIndex(2)
+
+"""
+    DefaultSimulationProgressiveRef
+
+The collection index that refers to the default location of progressive barrier
+constraints.
+"""
+const DefaultSimulationProgressiveRef = CollectionIndex(3)
 
 
 """
@@ -150,6 +167,27 @@ mutable struct ProgressiveConstraint <: AbstractProgressiveConstraint
 end
 
 """
+    SimulationProgressiveConstraint(f::Function)
+
+Create a progressive barrier constraint.
+
+Argument `f` is a function that should take a single vector argument and
+return a value that gives the amount the constraint function has been
+violated.
+
+A value greater than 0 indicates the function has been violated, 0 shows
+that the input lies on the constraint, and negative numbers show a feasible
+value.
+
+Negative numbers may be truncated to 0 without affecting the algorithm.
+"""
+mutable struct SimulationProgressiveConstraint <: AbstractProgressiveConstraint
+    f::Function
+    ignore::Bool
+    SimulationProgressiveConstraint(f::Function) = new(f, false)
+end
+
+"""
     ConstraintCache{FT<:AbstractFloat}
 
 Store constraint information on an iteration-by-iteration basis.
@@ -191,6 +229,7 @@ mutable struct Constraints{FT<:AbstractFloat}
 
         AddExtremeCollection(c)
         AddProgressiveCollection(c)
+        AddSimulationProgressiveCollection(c)
         return c
     end
 end
@@ -290,13 +329,23 @@ one progressive barrier constraint had a violation greater than h_max
 
 The second returned value is the sum of h_max values evaluated during the constraint checks.
 """
-function ConstraintEvaluation(p::AbstractProblem, point::Vector{T})::ConstraintOutcome where T
+function ConstraintEvaluation(p::AbstractProblem, point::Vector{T}, w = nothing, collectionInd = DefaultAllConstraintsRef)::ConstraintOutcome where T
     # Initially define result as feasible
     eval_result = Feasible
-    for (i,collection) in enumerate(p.constraints.collections)
+
+    # Determine the collections to evaluate
+    if collectionInd == DefaultAllConstraintsRef
+        conCollections = p.constraints.collections
+    elseif collectionInd isa CollectionIndex
+        conCollections = zip( [collectionInd.value], [p.constraints.collections[collectionInd.value]] )
+    else
+        conCollections = zip( (ind->ind.value).(collectionInd), p.constraints.collections[(ind->ind.value).(collectionInd)] )
+    end
+
+    for (i, collection) in conCollections
         collection.ignore && continue
 
-        result = ConstraintCollectionEvaluation(p, collection, point)
+        result = ConstraintCollectionEvaluation(p, collection, point, w)
         ConstraintCachePush(p, point, i, collection.violation)
 
         if result == WeakInfeasible
@@ -328,11 +377,11 @@ return ``\\infty``.
 (GetOldHmaxSum(c::Constraints{T})::T) where T = c.cache.OldHmax
 
 function ConstraintCollectionEvaluation(p::AbstractProblem, collection::ConstraintCollection,
-                                        x::Vector{FT})::ConstraintOutcome where {FT<:AbstractFloat}
+                                        x::Vector{FT}, w)::ConstraintOutcome where {FT<:AbstractFloat}
     if p.config.max_simultaneous_evaluations > 1
-        lock(() -> constraint_collection_evaluation(collection, x), p.config.constraint_cache_lock)
+        lock(() -> constraint_collection_evaluation(collection, x, w), p.config.constraint_cache_lock)
     else
-        constraint_collection_evaluation(collection, x)
+        constraint_collection_evaluation(collection, x, w)
     end
 end
 
@@ -348,15 +397,41 @@ h_max then a `StrongInfeasible` is returned. If the value is less than or equal
 to 0.0 then `Feasible` is returned. Otherwise `WeakInfeasible` is returned.
 """
 function constraint_collection_evaluation(collection::ConstraintCollection{T,ProgressiveConstraint},
-                                          x::Vector{T})::ConstraintOutcome where T
-    sum = 0.0
+                                          x::Vector{T}, w)::ConstraintOutcome where T
+    sum = zero(T)
     for c in collection.constraints
         c.ignore && continue
         sum += collection.result_aggregate(c.f(x))
     end
     collection.violation = sum
     if sum <= collection.h_max
-        return sum == 0.0 ? Feasible : WeakInfeasible
+        return isapprox( sum, zero(T), atol=1e-8 ) ? Feasible : WeakInfeasible
+    else
+        return StrongInfeasible
+    end
+end
+
+"""
+    constraint_collection_evaluation(collection::ConstraintCollection{T,ProgressiveConstraint},
+                                   x::Vector{T})::ConstraintOutcome where T
+
+Evalute every constraint within progressive constraint collection `collection`
+for point `x`.
+
+If the aggregate value of the constraint evaluations exceeds the collection's
+h_max then a `StrongInfeasible` is returned. If the value is less than or equal
+to 0.0 then `Feasible` is returned. Otherwise `WeakInfeasible` is returned.
+"""
+function constraint_collection_evaluation(collection::ConstraintCollection{T,SimulationProgressiveConstraint},
+                                          x::Vector{T}, w)::ConstraintOutcome where T
+    sum = zero(T)
+    for c in collection.constraints
+        c.ignore && continue
+        sum += collection.result_aggregate(c.f(x, w))
+    end
+    collection.violation = sum
+    if sum <= collection.h_max
+        return isapprox( sum, zero(T), atol=1e-10 ) ? Feasible : WeakInfeasible
     else
         return StrongInfeasible
     end
@@ -373,7 +448,7 @@ If any constraint returns false  or a value greater than 0 then a
 `StrongInfeasible` result is returned. Otherwise a `Feasible` result is returned.
 """
 function constraint_collection_evaluation(collection::ConstraintCollection{FT,ExtremeConstraint},
-                                          x::Vector{FT})::ConstraintOutcome where {FT<:AbstractFloat}
+                                          x::Vector{FT}, w)::ConstraintOutcome where {FT<:AbstractFloat}
     for c in collection.constraints
         c.ignore && continue
         v = c.f(x)
@@ -467,6 +542,37 @@ end
 
 
 """
+    AddSimulationProgressiveConstraint(p::AbstractProblem, c::Function; index::CollectionIndex=DefaultSimulationProgressiveRef)
+
+Register a single function that defines a progressive barrier constraint. Return
+an index that refers to the constraint.
+
+The provided function should take a vector input and return a numeric value
+indicating if the constraint has been met or not. Less than or
+equal to 0 indicates the constraint has been met. 0 shows the constraint has
+been violated.
+
+The `index` argument can be specified to give a collection to add the constraint
+to. The specified collection must exist, and must be able to accept progressive
+barrier constraints. If `index` is not specified then it is added to collection
+2, the default progressive barrier constraint collection.
+"""
+AddSimulationProgressiveConstraint(p::AbstractProblem, f::Function; index::CollectionIndex=DefaultSimulationProgressiveRef
+                        ) = AddSimulationProgressiveConstraint(p.constraints, f, index=index)
+
+function AddSimulationProgressiveConstraint(p::Constraints, f::Function;
+                                  index::CollectionIndex=DefaultSimulationProgressiveRef)::ConstraintIndex
+    i = index.value
+    i < 0 && error("Collection indices must be positive")
+    i > p.count && error("Invalid CollectionIndex")
+
+    c = SimulationProgressiveConstraint(f)
+    push!(p.collections[i].constraints, c)
+    p.collections[i].count += 1
+    return ConstraintIndex(p.collections[i].count)
+end
+
+"""
     AddProgressiveConstraint(p::AbstractProblem, c::Vector{Function})::Vector{Int}
 
 Register a group of functions that define progressive barrier constraints. Calls
@@ -506,6 +612,32 @@ function AddProgressiveCollection(p::Constraints{FT}; h_max=FT(Inf),
     return CollectionIndex(p.count)
 end
 
+
+"""
+    AddProgressiveCollection(p::Constraints{FT}; h_max=Inf, h_max_update::Function=h_max_update,
+                             aggregator::Function=x->max(0,x)^2)::CollectionIndex where {FT<:AbstractFloat}
+
+Instantiate a new constraint collection within the problem. Returns an index that refers to this
+new collection.
+
+The default constraint settings match those from Audet & Dennis 2009:
+
+`h_max`: Begins as infinity
+
+`h_max_update`: Sets h_max to the largest valid h evaluation if an iteration is improving
+
+`aggregator`: Creates h as ``\\sum k(x)`` where ``k=\\max(0,x)^2``
+"""
+AddSimulationProgressiveCollection(p::AbstractProblem; kwargs...)::CollectionIndex = AddSimulationProgressiveCollection(p.constraints; kwargs...)
+
+function AddSimulationProgressiveCollection(p::Constraints{FT}; h_max=FT(Inf),
+                                  aggregator::Function=x->max(0,x)^2)::CollectionIndex where {FT<:AbstractFloat}
+    push!(p.collections,
+          ConstraintCollection{FT,SimulationProgressiveConstraint}(h_max, aggregator))
+    p.count += 1
+
+    return CollectionIndex(p.count)
+end
 
 """
     AddExtremeCollection(p::Constraints{FT})::CollectionIndex where {FT<:AbstractFloat}

@@ -131,9 +131,14 @@ using Random
     end
 
     @testset "EvaluatePoint!" begin
-        function setup(con; initial=[4.0, 4.0, 4.0])
+        function setup(con; initial=[4.0, 4.0, 4.0], simcon = false)
             p = DSProblem{T}(3)
-            f = DS.rosenbrock
+
+            if simcon
+                f = DS.rosenbrocksimvar
+            else
+                f = DS.rosenbrock
+            end
             SetObjective(p, f)
             SetInitialPoint(p, initial)
             con(p)
@@ -173,6 +178,44 @@ using Random
         p = setup(p->AddProgressiveConstraint(p, x->x[1] > 0 ? 0 : -x[1]))
         p.constraints.collections[2].h_max = -4.0
         @test DS.EvaluatePoint!(p, [[-1.0, 4.0, 4.0]]) == DS.Unsuccessful
+
+        ### Simulation Progressive Constraints
+
+        # Test that they behave like normal progressive barrier constraints
+
+        #Feasible point with cost reduction is dominating
+        p = setup(p->AddSimulationProgressiveConstraint(p, (x, w)->x[1] > 0 ? 0 : -x[1]))
+        @test DS.EvaluatePoint!(p, [[3.0, 3.0, 3.0]]) == DS.Dominating
+
+        #Feasible point with cost increase is unsuccessful
+        p = setup(p->AddSimulationProgressiveConstraint(p, (x, w)->x[1] > 0 ? 0 : -x[1]))
+        @test DS.EvaluatePoint!(p, [[5.0, 4.0, 4.0]]) == DS.Unsuccessful
+
+        #Infeasible point with worse cost but less violation is improving
+        p = setup(p->AddSimulationProgressiveConstraint(p, (x, w)->-x[1]), initial=[-6.0, 4.0, 4.0])
+        @test DS.EvaluatePoint!(p, [[-5.0, 11.0, 4.0]]) == DS.Improving
+
+        #Infeasible point with improving cost and less violation is dominating
+        p = setup(p->AddSimulationProgressiveConstraint(p, (x, w)->x[1] > 0 ? 0 : -x[1]))
+        @test DS.EvaluatePoint!(p, [[-1.0, 4.0, 4.0]]) == DS.Dominating
+
+        #Infeasible point with improving cost and greater violation is unsuccessful
+        p = setup(p->AddSimulationProgressiveConstraint(p, (x, w)->x[1] > 0 ? 0 : -x[1]))
+        p.constraints.collections[3].h_max = -4.0
+        @test DS.EvaluatePoint!(p, [[-1.0, 4.0, 4.0]]) == DS.Unsuccessful
+
+        # Make sure the simulation variables are being passed properly
+
+        function testcon(x, w)
+            @test w[1] == 1
+            @test w[2] == 2
+
+            return 0
+        end
+
+        #Feasible point with cost reduction is dominating
+        p = setup(p->AddSimulationProgressiveConstraint(p, testcon), simcon = true)
+        @test DS.EvaluatePoint!(p, [[3.0, 3.0, 3.0]]) == DS.Dominating
     end
 
     @testset "Opportunistic Evaluation" begin

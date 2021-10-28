@@ -7,7 +7,15 @@ const DS = DirectSearch
 #soln: -1.0316 @ [±0.0898, ∓0.7126]
 camel6(x)=(4-2.1x[1]^2.0 + x[1]^4/3)x[1]^2.0 + x[1]x[2] + (-4 + 4x[2]^2.0)x[2]^2.0
 #soln: 0 @ [1,...,1]
-rosenbrock(x;a=1,b=100,d=length(x)) = sum([b*(x[i+1] - x[i]^2)^2 + (x[i]-a)^2 for i=1:d-1])
+
+function rosenbrock( x; a=1, b=100, d=length(x) )
+    sum( [b*(x[i+1] - x[i]^2)^2 + (x[i]-a)^2 for i=1:d-1] )
+end
+
+function rosenbrocksimvar( x; a=1, b=100, d=length(x) )
+    res = sum( [b*(x[i+1] - x[i]^2)^2 + (x[i]-a)^2 for i=1:d-1] )
+    return (res, [1, 2])
+end
 
 #Local Minima
 ackley(x;a=20,b=0.2,c=2pi,d=length(x)) = -a * exp(-b*√(sum(x.^2)/d)) - exp(sum(cos.(c.*x))/d) + a + exp(1)

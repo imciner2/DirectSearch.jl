@@ -170,8 +170,6 @@ function ReportConstraintCollection(c::ConstraintCollection{T, C}) where {T,C}
 Constraints:       $(c.count)
 Ignored:           $(c.ignore)
 h_max:             $(c.h_max)
-h_max update
-function handle:   $(c.h_max_update)
 result aggregate
 function handle:   $(c.result_aggregate)
 """
@@ -186,6 +184,7 @@ function report_final(p::DSProblem)::ReportSection
     push!(entries, "Feasible Cost" => p.x_cost)
     push!(entries, "Infeasible Solution" => p.i)
     push!(entries, "Infeasible Cost" => p.i_cost)
+    push!(entries, "Barrier threshold" => p.h_max)
 
     push!(entries, nothing)
 

@@ -239,17 +239,52 @@ Throws an error if the initial point is not feasible.
 """
 function EvaluateInitialPoint(p::DSProblem)
     p.user_initial_point == Nothing() && return
-    feasibility = ConstraintEvaluation(p, p.user_initial_point)
+
+    feasibility = ConstraintEvaluation(p, p.user_initial_point, nothing, [DefaultExtremeRef, DefaultProgressiveRef])
+
     if feasibility == StrongInfeasible
         error("Initial point must be feasible")
-    elseif feasibility == WeakInfeasible
+    end
+
+    # Point is feasible for relaxed constraints, so evaluate it
+    obj = p.objective(p.user_initial_point)
+
+    if obj isa Tuple
+        cost = obj[1]
+        w    = obj[2]
+    else
+        cost = obj
+        w    = nothing
+    end
+
+    cost = round(cost, digits=p.config.cost_digits)
+
+    simfeasibility = ConstraintEvaluation(p, p.user_initial_point, w, DefaultSimulationProgressiveRef)
+
+    # Merge the feasibility measures together
+    if simfeasibility == StrongInfeasible
+        error("Initial point must be feasible")
+
+    elseif simfeasibility == WeakInfeasible
+        # Point violates a relaxed constraint.
+        # Since we already handled strong infeasibility before the simulation, we only have the option of
+        # WeakInfeasible and Feasible - and the WeakInfeasible from the simulation will always overpower those.
         p.i = p.user_initial_point
-        p.i_cost = round(p.objective(p.user_initial_point), digits=p.config.cost_digits)
+        p.i_cost = cost
         CachePush(p, p.i, p.i_cost)
-    elseif feasibility == Feasible
-        p.x = p.user_initial_point
-        p.x_cost = round(p.objective(p.user_initial_point), digits=p.config.cost_digits)
-        CachePush(p, p.x, p.x_cost)
+
+    elseif simfeasibility == Feasible
+        # The behavior is now dependent on the original feasible/infeasible determination
+        if feasibility == WeakInfeasible
+            p.i = p.user_initial_point
+            p.i_cost = cost
+            CachePush(p, p.i, p.i_cost)
+
+        elseif feasibility == Feasible
+            p.x = p.user_initial_point
+            p.x_cost = cost
+            CachePush(p, p.x, p.x_cost)
+        end
     end
 
     p.status.function_evaluations += 1
@@ -399,13 +434,33 @@ function EvaluatePointSequential!(p::DSProblem{FT}, trial_points::Vector{Vector{
     #Iterate over all trial points
     for (i, point)=enumerate(trial_points)
 
-        feasibility = ConstraintEvaluation(p, point)
+        feasibility = ConstraintEvaluation(p, point, nothing, [DefaultExtremeRef, DefaultProgressiveRef])
 
         # Point violates h_max on at least one constraint collection
         feasibility == StrongInfeasible && continue
 
         #Point is feasible for relaxed constraints, so evaluate it
-        p.status.blackbox_time_total += @elapsed (cost, is_from_cache) = function_evaluation(p, point)
+        p.status.blackbox_time_total += @elapsed (eval_res, is_from_cache) = function_evaluation(p, point)
+
+        cost = eval_res[1]
+        w    = eval_res[2]
+
+        simfeasibility = ConstraintEvaluation(p, point, w, DefaultSimulationProgressiveRef)
+
+        # Merge the feasibility measures together
+        if simfeasibility == StrongInfeasible
+            # Point violates h_max on at least one constraint collection
+            continue
+
+        elseif simfeasibility == WeakInfeasible
+            # Point violates a relaxed constraint but less than h_max.
+            # Since we already handled strong infeasibility before the simulation, we only have the option of
+            # WeakInfeasible and Feasible - and the WeakInfeasible from the simulation will always overpower those.
+            feasibility = WeakInfeasible
+
+        elseif simfeasibility == Feasible
+            # There is no need to modify the feasibility since all of the sim constraints are feasible already
+        end
 
         #To determine if a point is dominating or improving the combined h_max is needed
         h = GetViolationSum(p.constraints, point)
@@ -580,15 +635,27 @@ By default calls the function with the trial point and returns the result. Overr
 provide custom evaluation behaviour.
 """
 function function_evaluation(p::DSProblem{T},
-                             trial_point::Vector{T})::Tuple{T, Bool} where T
-    if CacheQuery(p, trial_point)
-        p.status.cache_hits += 1
-        return (CacheGet(p, trial_point), true)
+                             trial_point::Vector{T}) where T
+    #if CacheQuery(p, trial_point)
+    #    p.status.cache_hits += 1
+    #    return (CacheGet(p, trial_point), true)
+    #end
+
+    obj = p.objective(trial_point)
+
+    if obj isa Tuple
+        cost = obj[1]
+        w    = obj[2]
+    else
+        cost = obj
+        w    = nothing
     end
-    cost = round(p.objective(trial_point), digits=p.config.cost_digits)
+
+    cost = round(cost, digits=p.config.cost_digits)
+
     p.status.function_evaluations += 1
-    CachePush(p, trial_point, cost)
-	return (cost, false)
+    #CachePush(p, trial_point, cost)
+	return ((cost, w), false)
 end
 
 """
@@ -596,15 +663,28 @@ end
 
 Evaluate a single trial point with the objective function of `p` using multiple threads.
 """
-function function_evaluation_parallel(p::DSProblem{T}, trial_point::Vector{T})::Tuple{T, Bool} where T
+function function_evaluation_parallel(p::DSProblem{T}, trial_point::Vector{T}) where T
     if CacheQueryParallel(p, trial_point)
         p.status.cache_hits += 1
         return (CacheGetParallel(p, trial_point), true)
     end
-    cost = p.objective(trial_point)
+
+    obj = p.objective(trial_point)
+
+    if obj isa Tuple
+        cost = obj[1]
+        w    = obj[2]
+    else
+        cost = obj
+        w    = nothing
+    end
+
+    cost = round(cost, digits=p.config.cost_digits)
+
     p.status.function_evaluations += 1
-    CachePushParallel(p, trial_point, cost)
-	return (cost, false)
+    CachePushParallel(p, trial_point, (cost, w))
+    return ((cost, w), false)
+
 end
 
 function _check_initial_point(p::DSProblem{T}) where T
